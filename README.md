@@ -6,7 +6,7 @@ Kakoune, including unsaved edits.
 ## How it works
 
 Background jobs compare the buffer with `@-` (the working-copy revision's parent).
-System `diff` locates changes; cached `jj file annotate` supplies blame.
+`diff` hunks pair similar lines; cached `jj file annotate` supplies blame.
 Gutters retain cached results while updating; changed lines become `uncommitted`.
 Source and history remain unchanged.
 
@@ -44,7 +44,7 @@ let
   source = builtins.path {
     path = /path/to/jj-gutter.kak;
     name = "jj-gutter-source";
-    sha256 = "sha256-7ai+bOekafReEC8gA/pst8blBLwz/0kzlG2L4kDOKi0=";
+    sha256 = "sha256-W9AtAZ1It++1YULCd2BMQxY0MdkT3SNICm6AZzwAHkI=";
     filter = p: _: builtins.elem (builtins.baseNameOf p) [
       "default.nix" "rc" "lib" "jj-gutter.kak"
       "worker.sh" "map.awk" "annotate.template"

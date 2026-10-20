@@ -21,6 +21,7 @@ FILENAME == ARGV[1] {
     next
 }
 /^@@ / {
+    flush_hunk()
     split($2, a, ","); split($3, b, ",")
     ac = (a[2] == "" ? 1 : a[2] + 0)
     bc = (b[2] == "" ? 1 : b[2] + 0)
@@ -31,25 +32,85 @@ FILENAME == ARGV[1] {
     if (bc == 0) start_b = new + start_a - old
     if (start_a < old || start_b < new || start_a - old != start_b - new) bad = 1
     while (new < start_b) mapping[new++] = old++
-    paired = (ac < bc ? ac : bc)
-    for (i = 0; i < bc; i++) mark(start_b + i, i < paired ? "~" : "+")
-    if (ac > bc) {
-        anchor = start_b + bc
-        if (anchor > new_count) anchor = new_count
-        if (anchor < 1) anchor = 1
-        mark(anchor, "-")
-    }
     old = start_a + ac; new = start_b + bc
+    hunk = 1
     next
 }
-# Standard unified diff content, headers, and missing-final-newline notices.
-/^[-+ ]/ || /^\\ No newline at end of file/ { next }
+hunk && /^-/ { left[++nr] = normalized(substr($0, 2)); next }
+hunk && /^\+/ { right[++na] = normalized(substr($0, 2)); next }
+/^--- / || /^\+\+\+ / || /^\\ No newline at end of file/ { next }
 { bad = 1 }
+function normalized(text) {
+    gsub(/[[:space:]]/, "", text)
+    return text
+}
+# Prefer whitespace-equivalent lines, then common prefixes/suffixes. Character
+# scans and the alignment matrix are bounded to keep large changes responsive.
+function pair_cost(i, j,    x,y,p,s,shorter,longer) {
+    x = left[i]; y = right[j]
+    if (x == y) return 0.05
+    if (x == "" || y == "") return 1.9
+    shorter = length(x) < length(y) ? length(x) : length(y)
+    longer = length(x) > length(y) ? length(x) : length(y)
+    p = s = 0
+    while (p < shorter && p < 128 && substr(x,p+1,1) == substr(y,p+1,1)) p++
+    while (p+s < shorter && s < 128 && substr(x,length(x)-s,1) == substr(y,length(y)-s,1)) s++
+    return 1.5 - (p+s) / longer
+}
+function deletion(after,    anchor) {
+    anchor = start_b + after
+    if (anchor > new_count) anchor = new_count
+    if (anchor < 1) anchor = 1
+    mark(anchor, "-")
+}
+function flush_hunk(    i,j,k,best,candidate,op) {
+    if (!hunk) return
+    if (nr != ac || na != bc) bad = 1
+    if (ac == 0 || bc == 0 || ac*bc > 4096) {
+        # Linear pairing skips excess blank lines in large replacement hunks.
+        i = j = 1
+        while (i <= ac && j <= bc) {
+            if (bc-j > ac-i && right[j] == "" && left[i] != "") {
+                mark(start_b+j-1, "+"); j++
+            } else if (ac-i > bc-j && left[i] == "" && right[j] != "") {
+                deletion(j-1); i++
+            } else {
+                mark(start_b+j-1, "~"); i++; j++
+            }
+        }
+        while (j <= bc) { mark(start_b+j-1, "+"); j++ }
+        if (i <= ac) deletion(bc)
+    } else {
+        for (i=0; i<=ac; i++) score[i,0] = i
+        for (j=0; j<=bc; j++) score[0,j] = j
+        for (i=1; i<=ac; i++) for (j=1; j<=bc; j++) {
+            best = score[i-1,j-1] + pair_cost(i,j); op = "pair"
+            candidate = score[i-1,j] + 1
+            if (candidate < best - 0.000000001) { best = candidate; op = "delete" }
+            candidate = score[i,j-1] + 1
+            if (candidate < best - 0.000000001) { best = candidate; op = "insert" }
+            score[i,j] = best; step[i,j] = op
+        }
+        i = ac; j = bc
+        while (i || j) {
+            op = i == 0 ? "insert" : (j == 0 ? "delete" : step[i,j])
+            if (op == "pair") { mark(start_b+j-1, "~"); i--; j-- }
+            else if (op == "insert") { mark(start_b+j-1, "+"); j-- }
+            else { deletion(j); i-- }
+        }
+    }
+    for (k in left) delete left[k]
+    for (k in right) delete right[k]
+    for (k in score) delete score[k]
+    for (k in step) delete step[k]
+    nr = na = hunk = 0
+}
 function mark(row, symbol) {
     if (row in markers && markers[row] != symbol) markers[row] = "*"
     else markers[row] = symbol
 }
 END {
+    flush_hunk()
     if (annotations != old_count || old_count - old != new_count - new) bad = 1
     if (bad) exit 1
     while (new <= new_count) mapping[new++] = old++

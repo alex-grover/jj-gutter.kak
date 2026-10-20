@@ -250,6 +250,19 @@ diff -q "$tmp/all-lines-column" "$tmp/after-cursor-column" >/dev/null || fail 'c
 [ "$(annotates)" -eq 1 ] || fail 'cursor reran annotate'
 ok 'column shows all logical lines and cursor movement reuses unchanged annotations'
 
+# Two new blank lines and a leading space belong to one replacement hunk.
+command "select 1.1,1.1; execute-keys 'i<ret><ret><space><esc>'; jj--tick"
+wait_flags '3|{JJModified}~'
+flags_have '1|{JJAdded}+' || fail 'first inserted newline was not added'
+flags_have '2|{JJAdded}+' || fail 'second inserted newline was not added'
+for row in 1 2 3; do
+    column_line_has "$row" uncommitted || fail 'changed replacement line inherited historical blame'
+done
+column_line_has 4 Test || fail 'unchanged row lost attribution beside a refined replacement'
+command 'execute-keys u; jj--tick'
+wait_flags '0| '
+ok 'inserted newlines are added and the whitespace-edited existing line is modified'
+
 # Unsaved edit, insertion, then deletion; inspect native line-spec options.
 command "select 1.1,1.1; execute-keys 'iUNSAVED<esc>'"
 command jj--tick
