@@ -1,0 +1,5 @@
+line_number ++ "\t" ++ commit.commit_id() ++ "\t" ++
+stringify(pad_end(@WIDTH@, truncate_end(@WIDTH@,
+  stringify(commit.author().name() ++ " · " ++ commit.change_id().short(8) ++ " · " ++ commit.description().first_line())
+    .replace(regex:"\\p{C}", " ")
+))).replace("\\", "\\\\").replace("|", "\\|").replace("'", "''") ++ "\n"
