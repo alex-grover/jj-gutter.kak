@@ -37,7 +37,7 @@ error() {
     # Retain command diagnostics in the buffer's state directory.
     [ ! -f "$job/error" ] || cp "$job/error" "$dir/error"
     callback jj--expect || :
-    { printf 'set-option buffer jj_markers\nset-option buffer jj_flags %s\n' "$stamp"
+    { printf 'set-option buffer jj_markers\nset-option buffer jj_annotations\njj--hold-markers\n'
       printf "set-option buffer jj_labels ''\nset-option buffer jj_column_width 0\nset-option buffer jj_error "; quote "$1"; printf '\n'
     } > "$dir/$generation.kak"
     callback jj--apply "$dir/$generation.kak" || :
@@ -179,7 +179,8 @@ resolve || error 'cannot recheck parent revision'
 [ "$resolved" = "$identity" ] || error 'revision changed during refresh; refresh again'
 valid || exit 0
 { printf 'set-option buffer jj_markers'; cat "$flags"
-  printf 'jj--hold-markers\n'
+  printf "set-option buffer jj_annotations '0|%*s' " "$width" ''
+  tr '\n' ' ' < "$labels"; printf '\njj--hold-markers\n'
   printf 'set-option buffer jj_labels '; quote "$labels"; printf '\n'
   printf 'set-option buffer jj_column_width %s\n' "$width"
   printf "set-option buffer jj_error ''\n"

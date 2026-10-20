@@ -21,6 +21,7 @@ declare-option -hidden str jj_labels ''
 declare-option -hidden int jj_column_width 0
 declare-option str jj_error ''
 declare-option -hidden str-list jj_markers
+declare-option -hidden str-list jj_annotations
 declare-option -hidden line-specs jj_flags
 declare-option -hidden line-specs jj_column
 declare-option -hidden str jj_line_key ''
@@ -28,26 +29,21 @@ add-highlighter shared/jj-column group -passes move
 
 define-command -hidden jj--line %{
     evaluate-commands %sh{
-        key="$kak_timestamp:$kak_opt_jj_labels:$kak_opt_jj_show_blame:$kak_opt_jj_column_width"
+        key="$kak_opt_jj_show_blame:$kak_opt_jj_column_width"
         [ "$key" = "$kak_opt_jj_line_key" ] && exit
         printf "set-option window jj_line_key '%s'\n" "$(printf '%s' "$key" | sed "s/'/''/g")"
         if [ "$kak_opt_jj_show_blame" = true ] && [ "$kak_opt_jj_column_width" -gt 0 ]; then
-            # Line-zero padding reserves width across source-line edits.
-            printf "set-option window jj_column %s '0|%*s' " "$kak_timestamp" "$kak_opt_jj_column_width" ''
-            if [ -r "$kak_opt_jj_labels" ]; then
-                # Join Kakoune-quoted cache records into one set-option command.
-                tr '\n' ' ' < "$kak_opt_jj_labels"
-            fi
-            printf '\nadd-highlighter -override window/jj-column ref -passes move jj-column\n'
+            printf 'add-highlighter -override window/jj-column ref -passes move jj-column\n'
         else
-            printf 'set-option window jj_column %s\n' "$kak_timestamp"
+            printf '%s\n' 'try %{ remove-highlighter window/jj-column }'
         fi
     }
 }
 
-# Republish cached icons at the current timestamp to retain touched-line flags.
+# Republish cached gutters at the current timestamp to retain touched-line flags.
 define-command -hidden jj--hold-markers %{
     set-option buffer jj_flags %val{timestamp} %opt{jj_markers}
+    set-option buffer jj_column %val{timestamp} %opt{jj_annotations}
 }
 
 define-command -hidden jj--capture %{
@@ -70,7 +66,7 @@ define-command -hidden jj--tick %{
         # File-backed buffers have absolute buffile paths, including new files.
         case "$kak_buffile" in
             /*) ;;
-            *) printf 'set-option buffer jj_markers\nset-option buffer jj_flags %s\n' "$kak_timestamp"
+            *) printf 'set-option buffer jj_markers\nset-option buffer jj_annotations\njj--hold-markers\n'
                printf "set-option buffer jj_labels ''\nset-option buffer jj_column_width 0\njj--line\n"; exit ;;
         esac
         if [ -z "$kak_opt_jj_dir" ] || [ ! -d "$kak_opt_jj_dir" ]; then
@@ -85,7 +81,8 @@ define-command -hidden jj--tick %{
             [ "$width" -le 80 ] || width=80
             printf "set-option buffer jj_file '%s'\n" "$(printf '%s' "$kak_buffile" | sed "s/'/''/g")"
             printf 'set-option buffer jj_column_width %s\n' "$width"
-            printf "set-option buffer jj_markers '0| '\njj--hold-markers\n"
+            printf "set-option buffer jj_markers '0| '\n"
+            printf "set-option buffer jj_annotations '0|%*s'\njj--hold-markers\n" "$width" ''
             printf "set-option buffer jj_labels ''\nset-option buffer jj_revision ''\n"
             printf 'set-option buffer jj_requested -1\n'
             printf 'add-highlighter -override buffer/jj-diff flag-lines default jj_flags\n'
@@ -108,13 +105,13 @@ define-command -hidden jj--tick %{
             printf 'set-option buffer jj_requested %s\n' "$kak_timestamp"
             printf 'set-option buffer jj_checked %s\n' "$now"
             printf "set-option buffer jj_file '%s'\n" "$(printf '%s' "$kak_buffile" | sed "s/'/''/g")"
-            # Keep cached icons during refresh; clear blame until its mapping is ready.
+            # Keep both cached gutters until replacement; invalidate them on path changes.
             if [ "$kak_opt_jj_requested" != "$kak_timestamp" ] || [ "$kak_opt_jj_file" != "$kak_buffile" ]; then
                 if [ "$kak_opt_jj_file" != "$kak_buffile" ] || [ "$kak_opt_jj_column_width" -eq 0 ]; then
-                    printf 'set-option buffer jj_markers\n'
+                    printf "set-option buffer jj_markers\nset-option buffer jj_annotations\nset-option buffer jj_labels ''\n"
                     printf 'set-option buffer jj_column_width 0\n'
                 fi
-                printf "jj--hold-markers\nset-option buffer jj_labels ''\nset-option buffer jj_revision ''\n"
+                printf "jj--hold-markers\nset-option buffer jj_revision ''\n"
             fi
             printf 'jj--capture\n'
         fi
@@ -198,7 +195,8 @@ define-command jj-disable -docstring 'Disable jj visuals and remove session-loca
     evaluate-commands -buffer '*' %{
         try %{ remove-highlighter buffer/jj-diff }
         set-option buffer jj_markers
-        set-option buffer jj_flags %val{timestamp}
+        set-option buffer jj_annotations
+        jj--hold-markers
         set-option buffer jj_labels ''
         set-option buffer jj_column_width 0
         set-option buffer jj_dir ''
@@ -208,7 +206,6 @@ define-command jj-disable -docstring 'Disable jj visuals and remove session-loca
     }
     evaluate-commands -client '*' %{
         try %{ remove-highlighter window/jj-column }
-        set-option window jj_column %val{timestamp}
         set-option window jj_line_key ''
     }
     nop %sh{ [ -z "$kak_opt_jj_state" ] || rm -rf "$kak_opt_jj_state" }

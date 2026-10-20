@@ -174,11 +174,24 @@ done
 [ "$(json_label_count < "$tmp/render.jsonl")" = 3 ] || fail 'wrapped lines duplicate or hide blame labels'
 client renderer 'remove-highlighter window/test-wrap'
 printf '%s\n' '{"jsonrpc":"2.0","method":"resize","params":[24,80]}' >&3
-ok 'native column labels every logical line once, leaving wrap continuations blank'
+client renderer jj-blame-toggle
+i=0
+until [ "$(json_widths < "$tmp/render.jsonl" | tail -n 1)" = 8 ]; do
+    i=$((i+1)); [ "$i" -lt 50 ] || fail 'blame toggle did not remove the annotation width'
+    sleep .1
+done
+client renderer jj-blame-toggle
+i=0
+until [ "$(json_label_count < "$tmp/render.jsonl")" = 3 ]; do
+    i=$((i+1)); [ "$i" -lt 50 ] || fail 'blame toggle did not restore cached labels'
+    sleep .1
+done
+ok 'native column labels all lines, wraps once, and toggles cached annotations'
 
 # Pause a refresh after deleting the prefix from a marked line.
 client renderer "select 1.1,1.1; execute-keys 'iSHIFT<esc>'; jj--tick"
 wait_flags '1|{JJModified}~'
+get jj_annotations > "$tmp/cached-annotations"
 first_frame=$(wc -l < "$tmp/render.jsonl")
 : > "$TEST_PAUSE_FILE"
 client renderer 'select 1.1,1.5'
@@ -187,12 +200,19 @@ i=0
 until [ -f "$TEST_PAUSE_FILE.started" ]; do i=$((i+1)); [ "$i" -lt 50 ] || fail 'paused refresh setup'; sleep .02; done
 flags_have '0| ' || fail 'pending diff width reservation missing'
 flags_have '1|{JJModified}~' || fail 'previous icon disappeared while recalculating'
+# Editing through a client with blame closed must retain the open client's data.
+command "select 2.1,2.1; execute-keys -with-hooks 'aX<esc>'; jj--tick"
+command "execute-keys -with-hooks u; jj--tick"
 tail -n +$((first_frame + 1)) "$tmp/render.jsonl" > "$tmp/pending-frames"
 grep -F -q '"contents": "~"' "$tmp/pending-frames" || fail 'previous icon not rendered during pending refresh'
 awk '/"method": "draw"/ && !index($0, "\"contents\": \"~\"") { missing=1 } END {exit missing}' "$tmp/pending-frames" || fail 'previous icon flickered before the pending-refresh frame'
 client renderer "echo -to-file '$tmp/pending-column' %opt{jj_column}"
 grep -q '0|' "$tmp/pending-column" || fail 'pending annotation width reservation missing'
-grep -Eq 'Test|JJBlame|uncommitted' "$tmp/pending-column" && fail 'pending annotation kept stale blame'
+get jj_annotations > "$tmp/pending-annotations"
+diff -q "$tmp/cached-annotations" "$tmp/pending-annotations" >/dev/null || fail 'cached annotations changed while recalculating'
+grep -q uncommitted "$tmp/pending-column" || fail 'pending annotation lost its cached changed-line label'
+grep -q Test "$tmp/pending-column" || fail 'pending annotation lost its cached historical labels'
+awk '/"method": "draw"/ { value=$0; if (gsub(/Test \{Error\}/,"",value) != 2 || !index(value,"uncommitted")) missing=1 } END {exit missing}' "$tmp/pending-frames" || fail 'blame flickered before the pending-refresh frame'
 # Exercise width anchors during line insertion and complete-buffer deletion.
 client renderer "select 1.1,1.1; execute-keys -with-hooks 'iNEW<ret><esc>'; jj--tick"
 flags_have '1|{JJModified}~' || fail 'previous icon did not remain at its last calculated line'
@@ -294,7 +314,9 @@ done
 diff -q "$tmp/first-column" "$tmp/second-column" >/dev/null || fail 'client cursors changed all-line attribution'
 client second jj-blame-toggle
 client second "echo -to-file '$tmp/second-column' %opt{jj_column}"
-[ "$(wc -w < "$tmp/second-column")" -eq 1 ] || fail 'second client toggle failed'
+client second "echo -to-file '$tmp/second-toggle' %opt{jj_show_blame}"
+grep -qx false "$tmp/second-toggle" || fail 'second client toggle failed'
+diff -q "$tmp/first-column" "$tmp/second-column" >/dev/null || fail 'toggle discarded shared cached annotations'
 get jj_column > "$tmp/first-column-after-toggle"
 diff -q "$tmp/first-column" "$tmp/first-column-after-toggle" >/dev/null || fail 'second client toggle affected first'
 ok 'two clients show all lines with independent column toggles'

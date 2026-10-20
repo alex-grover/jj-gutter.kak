@@ -5,9 +5,10 @@ Kakoune, including unsaved edits.
 
 ## How it works
 
-Background jobs compare the buffer with `@-` (its working-copy revision's parent)
-using `diff` and cached `jj file annotate` data. Changed lines show `uncommitted`.
-Display-only rendering leaves source contents and repository history unchanged.
+Background jobs compare the buffer with `@-` (the working-copy revision's parent).
+System `diff` locates changes; cached `jj file annotate` supplies blame.
+Gutters retain cached results while updating; changed lines become `uncommitted`.
+Source and history remain unchanged.
 
 ## Install
 
@@ -16,7 +17,7 @@ Keep `rc/` and `lib/` together in the checkout. Choose one method:
 
 ### Manual
 
-Add to `kakrc`, replacing the path:
+Add to `kakrc`:
 
 ```kak
 source /path/to/jj-gutter.kak/rc/jj-gutter.kak
@@ -35,7 +36,7 @@ plug "jj-gutter.kak" load-path "/path/to/jj-gutter.kak" config %{
 
 ### Nix / Home Manager
 
-Add this module, replacing the path:
+Module (replace the path):
 
 ```nix
 { pkgs, ... }:
@@ -43,7 +44,7 @@ let
   source = builtins.path {
     path = /path/to/jj-gutter.kak;
     name = "jj-gutter-source";
-    sha256 = "sha256-cPshXdlBRGPVP+9G/FBGI7E7CCoypgF8IEXKti96s34=";
+    sha256 = "sha256-7ai+bOekafReEC8gA/pst8blBLwz/0kzlG2L4kDOKi0=";
     filter = p: _: builtins.elem (builtins.baseNameOf p) [
       "default.nix" "rc" "lib" "jj-gutter.kak"
       "worker.sh" "map.awk" "annotate.template"
