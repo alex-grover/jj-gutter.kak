@@ -1,6 +1,6 @@
 # Jujutsu change markers and blame columns. Load once per session.
 declare-option str jj_shell sh
-declare-option str jj_worker %sh{ printf '%s/../lib/worker.sh' "$(dirname "$kak_source")" }
+declare-option str jj_worker %sh{ file=${kak_source##*/}; printf '%s../lib/worker.sh' "${kak_source%"$file"}"; }
 declare-option int jj_blame_width 40
 declare-option int jj_check_seconds 2
 declare-option bool jj_show_blame false
@@ -31,7 +31,7 @@ define-command -hidden jj--line %{
     evaluate-commands %sh{
         key="$kak_opt_jj_show_blame:$kak_opt_jj_column_width"
         [ "$key" = "$kak_opt_jj_line_key" ] && exit
-        printf "set-option window jj_line_key '%s'\n" "$(printf '%s' "$key" | sed "s/'/''/g")"
+        printf "set-option window jj_line_key '%s'\n" "$key"
         if [ "$kak_opt_jj_show_blame" = true ] && [ "$kak_opt_jj_column_width" -gt 0 ]; then
             printf 'add-highlighter -override window/jj-column ref -passes move jj-column\n'
         else
@@ -44,6 +44,20 @@ define-command -hidden jj--line %{
 define-command -hidden jj--hold-markers %{
     set-option buffer jj_flags %val{timestamp} %opt{jj_markers}
     set-option buffer jj_column %val{timestamp} %opt{jj_annotations}
+}
+
+define-command -hidden jj--detach %{
+    remove-hooks buffer jj-gutter
+    try %{ remove-highlighter buffer/jj-diff }
+    set-option buffer jj_dir ''
+    set-option buffer jj_labels ''
+    set-option buffer jj_markers
+    set-option buffer jj_annotations
+    set-option buffer jj_column_width 0
+    set-option buffer jj_error ''
+    jj--hold-markers
+    try %{ remove-highlighter window/jj-column }
+    set-option window jj_line_key ''
 }
 
 define-command -hidden jj--capture %{
@@ -63,30 +77,53 @@ define-command -hidden jj--capture %{
 define-command -hidden jj--tick %{
     evaluate-commands %sh{
         [ "$kak_opt_jj_enabled" = true ] || exit
+        detach() {
+            [ -z "$kak_opt_jj_dir" ] || rm -rf "$kak_opt_jj_dir"
+            printf 'jj--detach\n'
+        }
         # File-backed buffers have absolute buffile paths, including new files.
         case "$kak_buffile" in
             /*) ;;
-            *) printf 'set-option buffer jj_markers\nset-option buffer jj_annotations\njj--hold-markers\n'
-               printf "set-option buffer jj_labels ''\nset-option buffer jj_column_width 0\njj--line\n"; exit ;;
+            *) detach; exit ;;
         esac
+        probe=${kak_buffile%/*}
+        while [ ! -d "$probe" ] && [ "$probe" != / ]; do probe=${probe%/*}; [ -n "$probe" ] || probe=/; done
+        probe=$(cd -P "$probe" 2>/dev/null && pwd -P) || { detach; exit; }
+        while [ ! -d "$probe/.jj" ]; do
+            [ "$probe" != / ] || { detach; exit; }
+            probe=${probe%/*}; [ -n "$probe" ] || probe=/
+        done
         if [ -z "$kak_opt_jj_dir" ] || [ ! -d "$kak_opt_jj_dir" ]; then
-            dir=$(mktemp -d "$kak_opt_jj_state/b.XXXXXXXX") || exit
-            # mktemp paths can contain apostrophes (e.g. a custom TMPDIR).
-            escaped=$(printf '%s' "$dir" | sed "s/'/''/g")
-            printf "set-option buffer jj_dir '%s'\n" "$escaped"
-            # Reserve space before the first asynchronous workspace/diff result.
-            # A negative workspace check or another error removes it normally.
+            . "${kak_opt_jj_worker%/*}/quote.sh"
+            state=$kak_opt_jj_state
+            if [ -z "$state" ] || [ ! -d "$state" ]; then
+                state=$(mktemp -d "${TMPDIR:-/tmp}/kak-jj.XXXXXXXX") || exit
+                kakquote "$state"
+                printf 'set-option global jj_state %s\n' "$jj_quoted"
+            fi
+            dir=$(mktemp -d "$state/b.XXXXXXXX") || exit
+            kakquote "$dir"
+            printf 'set-option buffer jj_dir %s\n' "$jj_quoted"
+            # Reserve display width before launching the first request.
             width=$kak_opt_jj_blame_width
             [ "$width" -ge 8 ] || width=8
             [ "$width" -le 80 ] || width=80
-            printf "set-option buffer jj_file '%s'\n" "$(printf '%s' "$kak_buffile" | sed "s/'/''/g")"
             printf 'set-option buffer jj_column_width %s\n' "$width"
             printf "set-option buffer jj_markers '0| '\n"
             printf "set-option buffer jj_annotations '0|%*s'\njj--hold-markers\n" "$width" ''
             printf "set-option buffer jj_labels ''\nset-option buffer jj_revision ''\n"
-            printf 'set-option buffer jj_requested -1\n'
             printf 'add-highlighter -override buffer/jj-diff flag-lines default jj_flags\n'
-            printf 'jj--tick\n'
+            printf '%s\n' 'hook -group jj-gutter buffer NormalKey .* %{ jj--hold-markers }'
+            printf '%s\n' 'hook -group jj-gutter buffer InsertKey .* %{ jj--hold-markers }'
+            printf '%s\n' 'set-option buffer jj_file %val{buffile}'
+            printf 'set-option buffer jj_requested -1\nset-option buffer jj_checked 0\n'
+            printf "set-option window jj_line_key '%s:%s'\n" "$kak_opt_jj_show_blame" "$width"
+            if [ "$kak_opt_jj_show_blame" = true ]; then
+                printf 'add-highlighter -override window/jj-column ref -passes move jj-column\n'
+            else
+                printf '%s\n' 'try %{ remove-highlighter window/jj-column }'
+            fi
+            # Paint the reserved columns first; NormalIdle starts the calculation.
             exit
         fi
         now=$(date +%s)
@@ -99,12 +136,12 @@ define-command -hidden jj--tick %{
             printf '%s' "$generation" > "$kak_opt_jj_dir/generation"
             # Keep only the result still in use; cancel guards protect in-flight results.
             for file in "$kak_opt_jj_dir/"*.labels "$kak_opt_jj_dir/"*.kak; do
-                [ "$file" = "$kak_opt_jj_labels" ] || rm -f "$file"
+                [ ! -f "$file" ] || [ "$file" = "$kak_opt_jj_labels" ] || rm -f "$file"
             done
             printf 'set-option buffer jj_generation %s\n' "$generation"
             printf 'set-option buffer jj_requested %s\n' "$kak_timestamp"
             printf 'set-option buffer jj_checked %s\n' "$now"
-            printf "set-option buffer jj_file '%s'\n" "$(printf '%s' "$kak_buffile" | sed "s/'/''/g")"
+            printf '%s\n' 'set-option buffer jj_file %val{buffile}'
             # Keep both cached gutters until replacement; invalidate them on path changes.
             if [ "$kak_opt_jj_requested" != "$kak_timestamp" ] || [ "$kak_opt_jj_file" != "$kak_buffile" ]; then
                 if [ "$kak_opt_jj_file" != "$kak_buffile" ] || [ "$kak_opt_jj_column_width" -eq 0 ]; then
@@ -134,7 +171,9 @@ define-command -hidden -params 5 jj--apply %{
         [ "$2" = "$kak_timestamp" ] && [ "$3" = "$kak_opt_jj_generation" ] &&
         [ "$4" = "$kak_opt_jj_revision" ] && [ "$kak_buffile" = "$kak_opt_jj_file" ] && [ -r "$5" ] || exit
         # Apply the generated marker and annotation state.
-        printf "source '%s'\n" "$(printf '%s' "$5" | sed "s/'/''/g")"
+        . "${kak_opt_jj_worker%/*}/quote.sh"
+        kakquote "$5"
+        printf 'source %s\n' "$jj_quoted"
         # Refresh the receiving window after updating shared buffer data.
         printf 'jj--line\n'
     }
@@ -161,17 +200,9 @@ define-command jj-blame-toggle -docstring 'Toggle the current window annotation 
     jj--line
 }
 define-command jj-enable -docstring 'Enable read-only jj visuals for file buffers.' %{
-    evaluate-commands %sh{
-        if [ -z "$kak_opt_jj_state" ] || [ ! -d "$kak_opt_jj_state" ]; then
-            dir=$(mktemp -d "${TMPDIR:-/tmp}/kak-jj.XXXXXXXX") || exit
-            printf "set-option global jj_state '%s'\n" "$(printf '%s' "$dir" | sed "s/'/''/g")"
-        fi
-    }
     set-option global jj_enabled true
     add-highlighter -override shared/jj-column/text flag-lines default jj_column
     remove-hooks global jj-gutter
-    hook -group jj-gutter global NormalKey .* %{ jj--hold-markers }
-    hook -group jj-gutter global InsertKey .* %{ jj--hold-markers }
     hook -group jj-gutter global NormalIdle .* %{ jj--tick }
     hook -group jj-gutter global InsertIdle .* %{ jj--tick }
     hook -group jj-gutter global BufWritePost .* %{ try %{ jj--refresh } }
@@ -193,6 +224,7 @@ define-command jj-disable -docstring 'Disable jj visuals and remove session-loca
     remove-hooks global jj-gutter
     try %{ remove-highlighter shared/jj-column/text }
     evaluate-commands -buffer '*' %{
+        remove-hooks buffer jj-gutter
         try %{ remove-highlighter buffer/jj-diff }
         set-option buffer jj_markers
         set-option buffer jj_annotations

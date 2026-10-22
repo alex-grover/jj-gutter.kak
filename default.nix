@@ -19,7 +19,7 @@ stdenvNoCC.mkDerivation {
     name = "jj-gutter-source";
     filter = path: type:
       builtins.elem (builtins.baseNameOf path) [
-        "default.nix" "rc" "lib" "jj-gutter.kak" "worker.sh" "map.awk" "annotate.template"
+        "default.nix" "rc" "lib" "jj-gutter.kak" "worker.sh" "map.awk" "quote.sh" "annotate.template"
       ];
   };
   dontUnpack = true;
@@ -33,6 +33,9 @@ stdenvNoCC.mkDerivation {
     chmod -R u+w "$plugin"
     substituteInPlace "$plugin/rc/jj-gutter.kak" \
       --replace-fail 'declare-option str jj_shell sh' 'declare-option str jj_shell ${stdenvNoCC.shell}'
+    ${lib.getExe' gnused "sed"} -i \
+      "s|^declare-option str jj_worker .*|declare-option str jj_worker $plugin/lib/worker.sh|" \
+      "$plugin/rc/jj-gutter.kak"
     substituteInPlace "$plugin/lib/worker.sh" \
       --replace-fail 'JJ=jj' 'JJ=${lib.getExe jujutsu}' \
       --replace-fail 'DIFF=diff' 'DIFF=${lib.getExe' diffutils "diff"}' \

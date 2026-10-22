@@ -5,6 +5,7 @@ JJ=jj
 DIFF=diff
 KAK=kak
 lib=${0%/*}
+. "$lib/quote.sh"
 dir=$kak_opt_jj_dir
 generation=$kak_opt_jj_generation
 stamp=$kak_timestamp
@@ -20,16 +21,19 @@ valid() {
     IFS= read -r current < "$dir/generation" 2>/dev/null || [ -n "$current" ]
     [ "$current" = "$generation" ]
 }
-quote() { printf "'"; printf '%s' "$1" | sed "s/'/''/g"; printf "'"; }
+quote() { kakquote "$1"; printf '%s' "$jj_quoted"; }
 send() {
     valid || return 1
-    { printf 'evaluate-commands -client '; quote '*'; printf ' '; quote "$1"; printf '\n'; } |
+    kakquote "$1"
+    printf "evaluate-commands -client '*' %s\n" "$jj_quoted" |
         "$KAK" -p "$kak_session" >/dev/null 2>&1
 }
 callback() {
     command=$1; shift
-    command="$command $(quote "$dir") $(quote "$stamp") $(quote "$generation") $(quote "$identity")"
-    for argument do command="$command $(quote "$argument")"; done
+    for argument in "$dir" "$stamp" "$generation" "$identity" "$@"; do
+        kakquote "$argument"
+        command="$command $jj_quoted"
+    done
     send "$command"
 }
 error() {

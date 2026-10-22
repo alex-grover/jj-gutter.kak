@@ -5,15 +5,15 @@ Kakoune, including unsaved edits.
 
 ## How it works
 
-Background jobs compare the buffer with `@-` (the working-copy revision's parent).
-`diff` hunks pair similar lines; cached `jj file annotate` supplies blame.
-Gutters retain cached results while updating; changed lines become `uncommitted`.
+Idle jobs compare buffers with `@-`, the working-copy revision's parent, using
+`diff` and cached `jj file annotate`. Changed lines show `uncommitted`.
+An ancestor `.jj` directory enables integration before the first frame.
 Source and history remain unchanged.
 
 ## Install
 
 Requires Kakoune 2026.05.21, jj 0.46, `diff`, and Unix shell utilities on `PATH`.
-Keep `rc/` and `lib/` together in the checkout. Choose one method:
+Keep `rc/` and `lib/` together.
 
 ### Manual
 
@@ -44,10 +44,10 @@ let
   source = builtins.path {
     path = /path/to/jj-gutter.kak;
     name = "jj-gutter-source";
-    sha256 = "sha256-W9AtAZ1It++1YULCd2BMQxY0MdkT3SNICm6AZzwAHkI=";
+    sha256 = "sha256-hNdTaW0e/81B1TEfqxsFTAzVbRi/O5FkHG5FBRFqb+A=";
     filter = p: _: builtins.elem (builtins.baseNameOf p) [
       "default.nix" "rc" "lib" "jj-gutter.kak"
-      "worker.sh" "map.awk" "annotate.template"
+      "worker.sh" "map.awk" "quote.sh" "annotate.template"
     ];
   };
 in {

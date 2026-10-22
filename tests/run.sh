@@ -141,6 +141,34 @@ for startup_blame in true false; do
     ok "startup reserves space before any jj result (annotation=$startup_blame)"
 done
 
+# Verify first-frame geometry outside jj while the launch directory is a workspace.
+printf 'outside\n' > "$tmp/outside-startup.txt"
+for outside_blame in true false; do
+    : > "$TEST_TRACE"
+    mkfifo "$tmp/outside-$outside_blame.input"
+    exec 3<> "$tmp/outside-$outside_blame.input"
+    outside_global="source $(q "$repo/rc/jj-gutter.kak"); set-option global jj_show_blame $outside_blame; jj-enable"
+    outside_init="edit '$tmp/outside-startup.txt'; add-highlighter window/test-numbers number-lines -relative -min-digits 4 -separator '  '; declare-option line-specs test_diagnostics; set-option window test_diagnostics %val{timestamp} '0| '; add-highlighter window/test-diagnostics flag-lines default test_diagnostics"
+    "$real_kak" -n -ui json -s "$session" -E "$outside_global" -e "$outside_init" < "$tmp/outside-$outside_blame.input" > "$tmp/outside-$outside_blame.jsonl" 2> "$tmp/outside.err" &
+    pid=$!
+    i=0
+    until [ -n "$(json_widths < "$tmp/outside-$outside_blame.jsonl")" ]; do
+        i=$((i+1)); [ "$i" -lt 50 ] || fail 'outside-workspace startup'
+        sleep .1
+    done
+    command "execute-keys -with-hooks 'iX<esc>'; jj--tick"
+    sleep .1
+    [ ! -s "$TEST_TRACE" ] || fail 'outside-workspace startup invoked jj'
+    [ -z "$(get jj_dir)" ] || fail 'outside-workspace startup allocated buffer state'
+    [ -z "$(get jj_state)" ] || fail 'outside-workspace startup allocated session state'
+    json_widths < "$tmp/outside-$outside_blame.jsonl" > "$tmp/outside-widths"
+    grep -v '^7$' "$tmp/outside-widths" > "$tmp/outside-shift" || :
+    [ ! -s "$tmp/outside-shift" ] || fail 'outside-workspace columns flashed'
+    stop
+    exec 3>&-
+    ok "outside-workspace first draw reserves no plugin columns (annotation=$outside_blame)"
+done
+
 operation=$("$real_jj" --ignore-working-copy -R "$ws" op log --limit 1 -T id)
 start "$file"
 wait_flags '0| '
@@ -523,4 +551,5 @@ ok 'UTF-8 BOM capture agrees with baseline bytes'
 sh "$repo/tests/cache.sh"
 ok 'interrupted cache publication leaves complete data and a reusable cache'
 sh "$repo/tests/map.sh"
+sh "$repo/tests/quote.sh"
 printf '\n%s integration checks passed\n' "$passed"
