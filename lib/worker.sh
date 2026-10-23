@@ -41,7 +41,8 @@ error() {
     # Retain command diagnostics in the buffer's state directory.
     [ ! -f "$job/error" ] || cp "$job/error" "$dir/error"
     callback jj--expect || :
-    { printf 'set-option buffer jj_markers\nset-option buffer jj_annotations\njj--hold-markers\n'
+    { printf "set-option buffer jj_mark_file ''\nset-option buffer jj_optimistic_timestamp -1\n"
+      printf 'set-option buffer jj_markers\nset-option buffer jj_annotations\njj--hold-markers\n'
       printf "set-option buffer jj_labels ''\nset-option buffer jj_column_width 0\nset-option buffer jj_error "; quote "$1"; printf '\n'
     } > "$dir/$generation.kak"
     callback jj--apply "$dir/$generation.kak" || :
@@ -176,7 +177,8 @@ status=$?
 [ "$status" -le 1 ] || error 'system diff failed'
 flags=$job/flags
 labels=$dir/$generation.labels
-export width old_count new_count flags labels
+marks=$dir/$generation.marks
+export width old_count new_count flags labels marks
 run awk -f "$lib/map.awk" "$cache/annotations" "$job/diff" || error 'diff or annotation mapping failed'
 # Verify the working-copy and parent IDs again before publishing.
 resolve || error 'cannot recheck parent revision'
@@ -186,6 +188,9 @@ valid || exit 0
   printf "set-option buffer jj_annotations '0|%*s' " "$width" ''
   tr '\n' ' ' < "$labels"; printf '\njj--hold-markers\n'
   printf 'set-option buffer jj_labels '; quote "$labels"; printf '\n'
+  printf 'set-option buffer jj_mark_file '; quote "$marks"; printf '\n'
+  printf 'set-option buffer jj_optimistic_timestamp %s\n' "$stamp"
+  printf 'set-option buffer jj_optimistic_lines %s\n' "$((new_count > 0 ? new_count : 1))"
   printf 'set-option buffer jj_column_width %s\n' "$width"
   printf "set-option buffer jj_error ''\n"
 } > "$dir/$generation.kak"

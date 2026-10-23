@@ -7,6 +7,7 @@ BEGIN {
     new_count = ENVIRON["new_count"] + 0
     flags = ENVIRON["flags"]
     labels = ENVIRON["labels"]
+    marks = ENVIRON["marks"]
     old = new = 1
     sq = sprintf("%c", 39)
 }
@@ -113,6 +114,7 @@ END {
     flush_hunk()
     if (annotations != old_count || old_count - old != new_count - new) bad = 1
     if (bad) exit 1
+    if (marks != "") printf "%s", "" > marks
     while (new <= new_count) mapping[new++] = old++
     count = (new_count > 0 ? new_count : 1)
     # Off-buffer line-zero padding keeps the gutter one cell wide across edits.
@@ -122,6 +124,7 @@ END {
             symbol = markers[i]
             face = (symbol == "+" ? "JJAdded" : (symbol == "-" ? "JJDeleted" : "JJModified"))
             printf " %s%d|{%s}%s%s", sq, i, face, symbol, sq > flags
+            if (marks != "") printf "%d %s\n", i, symbol > marks
         }
         text = (i in mapping ? blame[mapping[i]] : sprintf("%-*s", width, substr("uncommitted", 1, width)))
         # Line-spec parsing reduces two backslashes to one; {\} makes labels literal.

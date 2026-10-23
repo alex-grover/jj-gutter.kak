@@ -5,9 +5,9 @@ Kakoune, including unsaved edits.
 
 ## How it works
 
-Idle jobs compare buffers with `@-`, the working-copy revision's parent, using
-`diff` and cached `jj file annotate`. Changed lines show `uncommitted`.
-An ancestor `.jj` directory enables integration before the first frame.
+Typing updates gutters from cached edit state. Idle jobs reconcile against `@-`,
+the working-copy revision's parent, using `diff` and cached `jj file annotate`.
+Changed lines show `uncommitted`. An ancestor `.jj` directory enables integration.
 Source and history remain unchanged.
 
 ## Install
@@ -44,10 +44,10 @@ let
   source = builtins.path {
     path = /path/to/jj-gutter.kak;
     name = "jj-gutter-source";
-    sha256 = "sha256-hNdTaW0e/81B1TEfqxsFTAzVbRi/O5FkHG5FBRFqb+A=";
+    sha256 = "sha256-KEizsDYSwi9FmXvqwqkwoy5WN/tzsaeTsi2cyXv6yAE=";
     filter = p: _: builtins.elem (builtins.baseNameOf p) [
       "default.nix" "rc" "lib" "jj-gutter.kak"
-      "worker.sh" "map.awk" "quote.sh" "annotate.template"
+      "worker.sh" "map.awk" "optimistic.awk" "quote.sh" "annotate.template"
     ];
   };
 in {

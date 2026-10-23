@@ -74,6 +74,7 @@ client() {
 }
 command() { client client0 "$@"; }
 get() { command "echo -to-file $(q "$tmp/value") %opt{$1}"; cat "$tmp/value"; }
+get_value() { command "echo -to-file $(q "$tmp/value") %val{$1}"; cat "$tmp/value"; }
 flags_have() { get jj_flags | grep -F -q "$1"; }
 column_line_has() { get jj_column | grep -E -q "(^| )$1[|][^ ]*$2"; }
 wait_flags() {
@@ -102,6 +103,15 @@ json_widths() { awk '/"method": "draw"/ { value=$0; sub(/^.*,[[:space:]]*/, "", 
 # Count fixture labels and display rows in the latest draw.
 json_label_count() { awk '/"method": "draw"/ { value=$0 } END { print gsub(/Test \{Error\}/, "", value) }'; }
 json_row_count() { awk '/"method": "draw"/ { value=$0 } END { print gsub(/\], \[/, "", value) + 1 }'; }
+render_keys() {
+    key_stamp=$(( $(get_value timestamp) + $2 ))
+    printf '{"jsonrpc":"2.0","method":"keys","params":["%s"]}\n' "$1" >&3
+    key_attempts=0
+    until [ "$(get jj_optimistic_timestamp)" = "$key_stamp" ]; do
+        key_attempts=$((key_attempts+1)); [ "$key_attempts" -lt 100 ] || fail "optimistic update for $1"
+        sleep .01
+    done
+}
 
 # Start fresh sessions with the backend held before workspace discovery. Check
 # every draw, including the very first frame, before and after the first result.
@@ -141,7 +151,8 @@ for startup_blame in true false; do
     ok "startup reserves space before any jj result (annotation=$startup_blame)"
 done
 
-# Verify first-frame geometry outside jj while the launch directory is a workspace.
+# A file outside jj must keep its first-frame layout and launch no jj jobs,
+# even though the test runner's own current directory is a jj workspace.
 printf 'outside\n' > "$tmp/outside-startup.txt"
 for outside_blame in true false; do
     : > "$TEST_TRACE"
@@ -216,10 +227,147 @@ until [ "$(json_label_count < "$tmp/render.jsonl")" = 3 ]; do
 done
 ok 'native column labels all lines, wraps once, and toggles cached annotations'
 
+# Disable idle requests to prove these changes are visible without a jj call.
+idle_timeout=$(get idle_timeout)
+command 'set-option global idle_timeout 10000'
+client renderer 'select 1.1,1.1; jj--remember-key'
+sleep .1
+calls_before=$(wc -l < "$TEST_TRACE")
+render_keys 'i<ret>' 1
+flags_have '1|{JJAdded}+' || fail 'Enter at BOL was not added immediately'
+column_line_has 1 uncommitted || fail 'new line inherited historical blame'
+column_line_has 2 Test || fail 'Enter did not move unchanged attribution'
+render_keys '<ret><space>' 2
+flags_have '2|{JJAdded}+' || fail 'second Enter was not added immediately'
+flags_have '3|{JJModified}~' || fail 'space edit was not modified immediately'
+column_line_has 4 Test || fail 'typing shifted an unchanged line incorrectly'
+[ "$(get jj_column | grep -oE '[0-9]+[|][{]JJBlame[}]' | wc -l)" -eq 5 ] || fail 'inline update duplicated annotation records'
+i=0
+until [ "$(awk '/"method": "draw"/ { value=$0 } END { print gsub(/uncommitted/,"",value) }' "$tmp/render.jsonl")" = 3 ]; do
+    i=$((i+1)); [ "$i" -lt 50 ] || fail 'optimistic changed-line blame was not rendered'
+    sleep .01
+done
+render_keys 'X<backspace>' 2
+flags_have '3|{JJModified}~' || fail 'character deletion lost the provisional modification'
+[ "$(wc -l < "$TEST_TRACE")" = "$calls_before" ] || fail 'optimistic typing invoked jj'
+model_dir=$(get jj_dir)
+[ "$(find "$model_dir" -name 'key-*.marks' | wc -l)" -eq 1 ] || fail 'optimistic marker files accumulated'
+[ "$(find "$model_dir" -name 'key-*.labels' | wc -l)" -eq 1 ] || fail 'optimistic annotation files accumulated'
+render_keys '<esc>' 0
+command "set-option global idle_timeout $idle_timeout"
+client renderer jj-refresh
+wait_flags '3|{JJModified}~'
+flags_have '1|{JJAdded}+' || fail 'canonical diff lost optimistic added line'
+client renderer "edit! $(q "$file"); jj-refresh"
+wait_flags '0| '
+ok 'Enter and character edits update provisionally before any jj invocation'
+
+command 'set-option global idle_timeout 10000'
+client renderer 'select 1.5,1.5; jj--remember-key'
+sleep .1
+calls_before=$(wc -l < "$TEST_TRACE")
+render_keys 'a<ret>' 1
+flags_have '2|{JJAdded}+' || fail 'Enter at EOL was not added immediately'
+get jj_flags | grep -F -q '1|{JJModified}' && fail 'Enter at EOL marked the existing line modified'
+render_keys 'é<backspace>' 2
+flags_have '2|{JJAdded}+' || fail 'typing on an added line changed its classification'
+render_keys '<backspace>' 1
+get jj_flags | grep -q JJ && fail 'removing an added empty line left a false change'
+column_line_has 1 Test || fail 'removing an added empty line lost original attribution'
+column_line_has 2 Test || fail 'line join did not move surviving attribution'
+[ "$(get_value buf_line_count)" -eq 3 ] || fail 'line join changed source line count incorrectly'
+[ "$(wc -l < "$TEST_TRACE")" = "$calls_before" ] || fail 'optimistic join invoked jj'
+render_keys '<esc>' 0
+command "set-option global idle_timeout $idle_timeout"
+client renderer jj-refresh
+wait_flags '0| '
+command 'set-option global idle_timeout 10000'
+client renderer 'select 1.1,1.1; jj--remember-key'
+calls_before=$(wc -l < "$TEST_TRACE")
+render_keys 'd' 1
+flags_have '1|{JJModified}~' || fail 'normal-mode character deletion was not modified immediately'
+column_line_has 1 uncommitted || fail 'character deletion retained historical blame'
+[ "$(wc -l < "$TEST_TRACE")" = "$calls_before" ] || fail 'normal-mode optimistic deletion invoked jj'
+command "set-option global idle_timeout $idle_timeout"
+client renderer "edit! $(q "$file"); jj-refresh"
+wait_flags '0| '
+ok 'optimistic added-line typing, joins, and character deletion reconcile with the final diff'
+
+# Newline deletion must also work in normal mode and cancel added blank rows.
+reset_optimistic_case() {
+    command "set-option global idle_timeout $idle_timeout"
+    client renderer "execute-keys '<esc>'; edit! $(q "$file"); jj-refresh"
+    wait_flags '0| '
+    command 'set-option global idle_timeout 10000'
+}
+reset_optimistic_case
+client renderer 'select 1.6,1.6; jj--remember-key'
+calls_before=$(wc -l < "$TEST_TRACE")
+render_keys 'd' 1
+flags_have '1|{JJModified}~' || fail 'normal-mode newline deletion was not optimistic'
+flags_have '2|{JJDeleted}-' || fail 'joined baseline line did not get a deletion anchor'
+column_line_has 2 Test || fail 'normal-mode join lost surviving attribution'
+[ "$(wc -l < "$TEST_TRACE")" = "$calls_before" ] || fail 'normal-mode newline deletion invoked jj'
+reset_optimistic_case
+client renderer 'select 1.6,1.6; jj--remember-key'
+calls_before=$(wc -l < "$TEST_TRACE")
+render_keys 'i<del><esc>' 1
+flags_have '1|{JJModified}~' || fail 'insert-mode Delete on a baseline newline was not optimistic'
+flags_have '2|{JJDeleted}-' || fail 'insert-mode Delete lost its baseline deletion anchor'
+[ "$(wc -l < "$TEST_TRACE")" = "$calls_before" ] || fail 'insert-mode Delete invoked jj'
+reset_optimistic_case
+client renderer 'select 2.1,2.1; jj--remember-key'
+calls_before=$(wc -l < "$TEST_TRACE")
+render_keys 'i<backspace><esc>' 1
+flags_have '1|{JJModified}~' || fail 'Backspace on a baseline newline was not optimistic'
+flags_have '2|{JJDeleted}-' || fail 'Backspace lost its baseline deletion anchor'
+[ "$(wc -l < "$TEST_TRACE")" = "$calls_before" ] || fail 'Backspace invoked jj'
+reset_optimistic_case
+client renderer 'select 1.1,1.1; jj--remember-key'
+calls_before=$(wc -l < "$TEST_TRACE")
+render_keys 'xd' 1
+flags_have '1|{JJDeleted}-' || fail 'whole-line deletion was not optimistic'
+column_line_has 1 Test || fail 'whole-line deletion did not move surviving attribution'
+[ "$(wc -l < "$TEST_TRACE")" = "$calls_before" ] || fail 'whole-line deletion invoked jj'
+reset_optimistic_case
+client renderer 'select 1.1,1.1; jj--remember-key'
+calls_before=$(wc -l < "$TEST_TRACE")
+render_keys 'i<ret><backspace>' 2
+get jj_flags | grep -q JJ && fail 'Enter/Backspace left a false modification'
+column_line_has 1 Test || fail 'Enter/Backspace lost baseline attribution'
+render_keys '<ret><esc>' 1
+client renderer 'select 1.1,1.1; jj--remember-key'
+render_keys 'd' 1
+get jj_flags | grep -q JJ && fail 'deleting an added blank line left a false change'
+render_keys 'i<ret><esc>' 1
+client renderer 'select 1.1,1.1; jj--remember-key'
+render_keys 'i<del><esc>' 1
+get jj_flags | grep -q JJ && fail 'Delete on an added newline left a false change'
+[ "$(wc -l < "$TEST_TRACE")" = "$calls_before" ] || fail 'added-newline cancellation invoked jj'
+reset_optimistic_case
+client renderer 'select 3.1,3.1; jj--remember-key'
+calls_before=$(wc -l < "$TEST_TRACE")
+render_keys 'o<esc>' 1
+flags_have '4|{JJAdded}+' || fail 'open-line did not add a provisional row'
+client renderer 'select 4.1,4.1; jj--remember-key'
+render_keys 'd' 1
+get jj_flags | grep -q JJ && fail 'deleting an added EOF row left a false change'
+[ "$(wc -l < "$TEST_TRACE")" = "$calls_before" ] || fail 'EOF newline deletion invoked jj'
+reset_optimistic_case
+client renderer 'select 1.1,2.1; jj--remember-key'
+calls_before=$(wc -l < "$TEST_TRACE")
+render_keys '<a-j>' 2
+flags_have '1|{JJModified}~' || fail 'join-lines command was not optimistic'
+flags_have '2|{JJDeleted}-' || fail 'join-lines command lost its deletion anchor'
+[ "$(wc -l < "$TEST_TRACE")" = "$calls_before" ] || fail 'join-lines command invoked jj'
+command "set-option global idle_timeout $idle_timeout"
+client renderer "edit! $(q "$file"); jj-refresh"
+wait_flags '0| '
+ok 'newline deletion, blank-line cancellation, and joins update without jj'
+
 # Pause a refresh after deleting the prefix from a marked line.
 client renderer "select 1.1,1.1; execute-keys 'iSHIFT<esc>'; jj--tick"
 wait_flags '1|{JJModified}~'
-get jj_annotations > "$tmp/cached-annotations"
 first_frame=$(wc -l < "$tmp/render.jsonl")
 : > "$TEST_PAUSE_FILE"
 client renderer 'select 1.1,1.5'
@@ -236,11 +384,9 @@ grep -F -q '"contents": "~"' "$tmp/pending-frames" || fail 'previous icon not re
 awk '/"method": "draw"/ && !index($0, "\"contents\": \"~\"") { missing=1 } END {exit missing}' "$tmp/pending-frames" || fail 'previous icon flickered before the pending-refresh frame'
 client renderer "echo -to-file '$tmp/pending-column' %opt{jj_column}"
 grep -q '0|' "$tmp/pending-column" || fail 'pending annotation width reservation missing'
-get jj_annotations > "$tmp/pending-annotations"
-diff -q "$tmp/cached-annotations" "$tmp/pending-annotations" >/dev/null || fail 'cached annotations changed while recalculating'
-grep -q uncommitted "$tmp/pending-column" || fail 'pending annotation lost its cached changed-line label'
-grep -q Test "$tmp/pending-column" || fail 'pending annotation lost its cached historical labels'
-awk '/"method": "draw"/ { value=$0; if (gsub(/Test \{Error\}/,"",value) != 2 || !index(value,"uncommitted")) missing=1 } END {exit missing}' "$tmp/pending-frames" || fail 'blame flickered before the pending-refresh frame'
+grep -q uncommitted "$tmp/pending-column" || fail 'pending annotation lost its changed-line label'
+column_line_has 3 Test || fail 'untouched line lost historical attribution'
+awk '/"method": "draw"/ { value=$0; total=gsub(/Test \{Error\}/,"",value); total+=gsub(/uncommitted/,"",value); if (total != 3) missing=1 } END {exit missing}' "$tmp/pending-frames" || fail 'blame flickered before the pending-refresh frame'
 # Exercise width anchors during line insertion and complete-buffer deletion.
 client renderer "select 1.1,1.1; execute-keys -with-hooks 'iNEW<ret><esc>'; jj--tick"
 flags_have '1|{JJModified}~' || fail 'previous icon did not remain at its last calculated line'
@@ -551,5 +697,6 @@ ok 'UTF-8 BOM capture agrees with baseline bytes'
 sh "$repo/tests/cache.sh"
 ok 'interrupted cache publication leaves complete data and a reusable cache'
 sh "$repo/tests/map.sh"
+sh "$repo/tests/optimistic.sh"
 sh "$repo/tests/quote.sh"
 printf '\n%s integration checks passed\n' "$passed"

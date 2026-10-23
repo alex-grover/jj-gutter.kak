@@ -19,7 +19,7 @@ stdenvNoCC.mkDerivation {
     name = "jj-gutter-source";
     filter = path: type:
       builtins.elem (builtins.baseNameOf path) [
-        "default.nix" "rc" "lib" "jj-gutter.kak" "worker.sh" "map.awk" "quote.sh" "annotate.template"
+        "default.nix" "rc" "lib" "jj-gutter.kak" "worker.sh" "map.awk" "optimistic.awk" "quote.sh" "annotate.template"
       ];
   };
   dontUnpack = true;
